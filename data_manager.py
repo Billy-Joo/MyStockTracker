@@ -37,6 +37,19 @@ def get_worksheet(worksheet_name):
         worksheet = sheet.add_worksheet(title=worksheet_name, rows=1000, cols=20)
     return worksheet
 
+def clean_numeric(val):
+    if pd.isna(val) or val == "":
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        cleaned = val.replace(',', '').replace('원', '').replace('KRW', '').replace('$', '').strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+    return 0.0
+
 def load_portfolio():
     try:
         worksheet = get_worksheet("Portfolio")
@@ -48,6 +61,13 @@ def load_portfolio():
         # Ensure Ticker is string (sometimes it reads as int like 5930 instead of 005930)
         if 'Ticker' in df.columns:
             df['Ticker'] = df['Ticker'].astype(str).str.zfill(6)
+
+        # Convert numeric columns safely
+        numeric_cols = ["Quantity", "AvgPrice", "CurrentPrice", "DailyChange", "DailyChangeRate", "PeriodChangeRate", "CurrentValue", "InvestedAmount", "ProfitLoss", "ReturnRate"]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = df[col].apply(clean_numeric)
+
         return df
     except Exception as e:
         print(f"Error loading portfolio from sheets: {e}")
@@ -104,6 +124,9 @@ def fetch_price_wrapper(args):
 def update_portfolio_prices(portfolio_df, lookback_days=20):
     if portfolio_df.empty:
         return portfolio_df
+
+    portfolio_df['Quantity'] = portfolio_df['Quantity'].apply(clean_numeric)
+    portfolio_df['AvgPrice'] = portfolio_df['AvgPrice'].apply(clean_numeric)
     
     current_prices = []
     daily_changes = []
@@ -162,10 +185,16 @@ def load_history():
         df = pd.DataFrame(data)
         if 'Account' not in df.columns:
             df['Account'] = 'All'
+
+        for col in ["TotalValue", "TotalInvested", "TotalProfit"]:
+            if col in df.columns:
+                df[col] = df[col].apply(clean_numeric)
+
         return df
     except Exception as e:
         print(f"Error loading history from sheets: {e}")
         return pd.DataFrame(columns=["Date", "Account", "TotalValue", "TotalInvested", "TotalProfit"])
+
 
 
 def save_history(portfolio_df):
@@ -285,3 +314,19 @@ def get_monthly_summary():
     monthly_summary['Month'] = monthly_summary['Month'].astype(str)
     
     return monthly_summary
+
+def get_stock_price_history(ticker, period='1y'):
+    """
+    Fetches price history for a single stock for '1m' (30 days) or '1y' (365 days).
+    """
+    days = 30 if period == '1m' else 365
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        df = fdr.DataReader(ticker, start=start_date)
+        if df.empty:
+            return pd.DataFrame()
+        df = df.reset_index()
+        return df
+    except Exception as e:
+        print(f"Error fetching stock price history for {ticker}: {e}")
+        return pd.DataFrame()
