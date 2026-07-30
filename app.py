@@ -95,10 +95,12 @@ else:
         df = portfolio.copy()
 
     # Ensure necessary columns exist (handling legacy data or partial updates)
-    required_cols = ['CurrentValue', 'InvestedAmount', 'ProfitLoss', 'DailyChange', 'DailyChangeRate', 'PeriodChangeRate']
+    required_cols = ['Quantity', 'AvgPrice', 'CurrentValue', 'InvestedAmount', 'ProfitLoss', 'DailyChange', 'DailyChangeRate', 'PeriodChangeRate']
     for col in required_cols:
         if col not in df.columns:
-            df[col] = 0
+            df[col] = 0.0
+        else:
+            df[col] = df[col].apply(dm.clean_numeric)
 
     # Calculate Totals
     total_value = df['CurrentValue'].sum()
@@ -120,11 +122,16 @@ else:
     m3.metric("Total Profit/Loss", f"{total_profit:,.0f} KRW", delta=f"{total_return:.2f}%")
     m4.metric("Daily Change", f"{today_change_val:,.0f} KRW", delta=f"{today_change_pct:.2f}%")
 
-    # --- Portfolio Table ---
-    st.subheader("📋 My Holdings")
-    
-    edit_mode = st.toggle("Enable Editing")
+    # --- Portfolio Table Header & Controls ---
+    h_col1, h_col2, h_col3 = st.columns([3, 1.5, 2])
+    with h_col1:
+        st.subheader("📋 My Holdings")
+    with h_col2:
+        edit_mode = st.toggle("Enable Editing")
+    with h_col3:
+        show_stock_detail = st.toggle("🔍 개별 종목 상세/차트 보기", value=False, help="선택한 종목의 삭제 기능 및 1개월/1년 주가 차트를 표시합니다.")
 
+    event = None
     if edit_mode:
         st.info("Edit **Quantity** and **Avg Buy Price** directly in the table below.")
         # Column configuration for formatting
@@ -162,8 +169,6 @@ else:
             st.session_state.portfolio = dm.update_portfolio_prices(st.session_state.portfolio, lookback_days=lookback_days)
             dm.save_portfolio(st.session_state.portfolio)
             st.toast("Portfolio updated!", icon="💾")
-            # Force rerun to allow switch back to View mode with updated data if desired? 
-            # Not strictly necessary as data_editor updates state.
             
     else:
         # --- View Mode (Styled) ---
@@ -185,7 +190,6 @@ else:
                 return f"{arrow} {abs(val):,.0f}"
 
         # Apply styling
-        # Note: st.dataframe allows display of Styler objects
         styled_df = df.style.format({
             "Quantity": "{:,.0f}",
             "AvgPrice": "{:,.0f}",
@@ -199,12 +203,111 @@ else:
             "ReturnRate": lambda x: format_with_arrow(x, is_percent=True)
         }).map(get_color, subset=["DailyChange", "DailyChangeRate", "PeriodChangeRate", "ProfitLoss", "ReturnRate"])
         
-        st.dataframe(
+        event = st.dataframe(
             styled_df,
             column_order=["Account", "Name", "Ticker", "Quantity", "AvgPrice", "CurrentPrice", "DailyChange", "DailyChangeRate", "PeriodChangeRate", "CurrentValue", "InvestedAmount", "ProfitLoss", "ReturnRate"],
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="portfolio_grid_select"
         )
+
+    # --- Selected Stock Detail & Actions (Only rendered if show_stock_detail is ON) ---
+    if show_stock_detail and not df.empty:
+        st.markdown("---")
+        st.subheader("🎯 개별 종목 상세 관리 및 주가 분석")
+        st.caption("💡 위의 **보유 종목 표(그리드)에서 원하는 종목 행을 직접 클릭**하시거나, 아래 드롭다운에서 선택하면 삭제 및 1개월/1년 주가 변화를 바로 확인하실 수 있습니다.")
+        
+        stock_options = [f"{row['Name']} ({row['Ticker']}) | 계좌: {row['Account']}" for _, row in df.iterrows()]
+        
+        # Check if user clicked a row in the grid table
+        if event and hasattr(event, "selection") and event.selection and "rows" in event.selection and len(event.selection["rows"]) > 0:
+            grid_row_idx = event.selection["rows"][0]
+            if 0 <= grid_row_idx < len(df):
+                clicked_stock_str = stock_options[grid_row_idx]
+                if st.session_state.get("prev_grid_selection") != grid_row_idx or st.session_state.get("selected_stock_item") != clicked_stock_str:
+                    st.session_state["prev_grid_selection"] = grid_row_idx
+                    st.session_state["selected_stock_item"] = clicked_stock_str
+
+        # Fallback if session state is missing or out of sync
+        if "selected_stock_item" not in st.session_state or st.session_state["selected_stock_item"] not in stock_options:
+            st.session_state["selected_stock_item"] = stock_options[0]
+        
+        selected_stock_str = st.selectbox(
+            "선택된 종목 (위 표에서 클릭한 종목이 자동 반영됩니다):", 
+            stock_options, 
+            key="selected_stock_item"
+        )
+        
+        if selected_stock_str and selected_stock_str in stock_options:
+            sel_idx = stock_options.index(selected_stock_str)
+            selected_row = df.iloc[sel_idx]
+            sel_name = selected_row['Name']
+            sel_ticker = str(selected_row['Ticker']).zfill(6)
+            sel_account = selected_row['Account']
+            
+            detail_col1, detail_col2 = st.columns([1, 2])
+            
+            with detail_col1:
+                st.markdown(f"### 📌 {sel_name}")
+                st.write(f"- **티커(종목코드)**: `{sel_ticker}`")
+                st.write(f"- **증권 계좌**: `{sel_account}`")
+                st.write(f"- **보유 수량**: `{selected_row['Quantity']:,.0f} 주`")
+                st.write(f"- **평균 매수가**: `{selected_row['AvgPrice']:,.0f} 원`")
+                st.write(f"- **현재가**: `{selected_row['CurrentPrice']:,.0f} 원`")
+                st.write(f"- **평가 금액**: `{selected_row['CurrentValue']:,.0f} 원`")
+                
+                # Delete Stock Functionality
+                st.markdown("#### 🗑️ 종목 삭제")
+                st.write("선택한 종목을 포트폴리오에서 삭제합니다.")
+                if st.button(f"'{sel_name}' ({sel_account}) 삭제하기", type="primary", key="btn_delete_selected"):
+                    new_portfolio = st.session_state.portfolio[
+                        ~((st.session_state.portfolio['Name'] == sel_name) & 
+                          (st.session_state.portfolio['Ticker'] == sel_ticker) & 
+                          (st.session_state.portfolio['Account'] == sel_account))
+                    ]
+                    st.session_state.portfolio = new_portfolio
+                    dm.save_portfolio(st.session_state.portfolio)
+                    st.success(f"'{sel_name}' ({sel_account}) 종목이 삭제되었습니다!")
+                    st.rerun()
+                    
+            with detail_col2:
+                st.markdown("#### 📈 주가 변화 추이 (1개월 / 1년)")
+                period_tab1, period_tab2 = st.tabs(["1개월 변화", "1년 변화"])
+                
+                for period_key, current_tab in [("1m", period_tab1), ("1y", period_tab2)]:
+                    with current_tab:
+                        with st.spinner("주가 차트 불러오는 중..."):
+                            stock_hist_df = dm.get_stock_price_history(sel_ticker, period=period_key)
+                            
+                        if not stock_hist_df.empty and 'Close' in stock_hist_df.columns:
+                            fig_stock = px.line(
+                                stock_hist_df, 
+                                x='Date', 
+                                y='Close', 
+                                title=f"{sel_name} ({sel_ticker}) {'1개월' if period_key=='1m' else '1년'} 주가 흐름",
+                                labels={'Close': '종가 (원)', 'Date': '날짜'}
+                            )
+                            fig_stock.update_traces(line_color='#e74c3c' if period_key=='1m' else '#2980b9', line_width=2)
+                            fig_stock.update_layout(hovermode="x unified", height=320)
+                            st.plotly_chart(fig_stock, use_container_width=True)
+                            
+                            start_price = stock_hist_df.iloc[0]['Close']
+                            end_price = stock_hist_df.iloc[-1]['Close']
+                            max_price = stock_hist_df['Close'].max()
+                            min_price = stock_hist_df['Close'].min()
+                            period_change = end_price - start_price
+                            period_pct = (period_change / start_price * 100) if start_price != 0 else 0
+                            
+                            c1, c2, c3, c4 = st.columns(4)
+                            c1.metric("시작가", f"{start_price:,.0f}원")
+                            c2.metric("최신가", f"{end_price:,.0f}원", delta=f"{period_pct:+.2f}%")
+                            c3.metric("최고가", f"{max_price:,.0f}원")
+                            c4.metric("최저가", f"{min_price:,.0f}원")
+                        else:
+                            st.info("주가 변동 데이터를 불러올 수 없습니다.")
+
 
 
     # Charts
@@ -292,4 +395,3 @@ else:
                 st.error(f"Error searching stocks: {e}")
 
 # End of file
-
