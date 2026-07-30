@@ -1,0 +1,9 @@
+streamlit
+finance-datareader
+pandas
+plotly
+openpyxl
+lxml
+matplotlib
+gspread
+oauth2client

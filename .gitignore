@@ -1,0 +1,9 @@
+# Ignore sensitive credentials and keys
+*.json
+.streamlit/secrets.toml
+
+# Ignore python cache and logs
+__pycache__/
+*.log
+lib/
+install_log.txt
